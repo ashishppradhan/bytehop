@@ -1,5 +1,5 @@
 /**
- * libp2p Relay Server
+ * ByteHop Relay Server
  * 
  * This server enables browser-to-browser P2P connections by:
  * 1. Providing a WebSocket endpoint browsers can connect to
@@ -9,7 +9,6 @@
 
 import { createLibp2p, type Libp2p } from 'libp2p'
 import { webSockets } from '@libp2p/websockets'
-import { all } from '@libp2p/websockets/filters'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
@@ -18,7 +17,7 @@ import { identify } from '@libp2p/identify'
 const PORT = process.env.PORT || 9090
 
 async function main(): Promise<void> {
-    console.log('🚀 Starting libp2p relay server...')
+    console.log('🚀 Starting ByteHop relay server...')
 
     const server: Libp2p = await createLibp2p({
         addresses: {
@@ -27,9 +26,7 @@ async function main(): Promise<void> {
             ]
         },
         transports: [
-            webSockets({
-                filter: all // Accept all connections
-            })
+            webSockets()
         ],
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
