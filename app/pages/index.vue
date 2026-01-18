@@ -4,18 +4,19 @@ import type { Libp2p } from '@libp2p/interface'
 const toast = useToast()
 
 // libp2p state
-const { state: libp2pState, initNode, connectToPeer, getShareableAddress } = useLibp2p()
+const { state: libp2pState, initNode, connectWithCode, generateShareCode } = useLibp2p()
 
 // File transfer - pass node reference
 const nodeRef = computed(() => libp2pState.node as Libp2p | null)
-const { transfers, receivedFiles, sendFile, downloadFile, clearTransfer } = useFileTransfer(nodeRef)
+const { transfers, receivedFiles, sendFile, downloadFile } = useFileTransfer(nodeRef)
 
 // UI State
-const peerAddressInput = ref('')
+const peerCodeInput = ref('')
 const selectedFile = ref<File | null>(null)
 const selectedPeer = ref<string | undefined>(undefined)
 const isConnecting = ref(false)
 const isSending = ref(false)
+const isGeneratingCode = ref(false)
 
 // Initialize on mount
 onMounted(async () => {
@@ -35,27 +36,60 @@ onMounted(async () => {
   }
 })
 
-// Connect to peer
+// Generate share code
+async function handleGenerateCode(): Promise<void> {
+  isGeneratingCode.value = true
+  try {
+    await generateShareCode()
+    toast.add({
+      title: 'Code Generated',
+      description: 'Share this code with others',
+      color: 'success'
+    })
+  } catch (err) {
+    toast.add({
+      title: 'Failed',
+      description: err instanceof Error ? err.message : 'Failed to generate code',
+      color: 'error'
+    })
+  } finally {
+    isGeneratingCode.value = false
+  }
+}
+
+// Connect with code
 async function handleConnect(): Promise<void> {
-  if (!peerAddressInput.value.trim()) return
+  if (!peerCodeInput.value.trim()) return
   
   isConnecting.value = true
   try {
-    await connectToPeer(peerAddressInput.value.trim())
+    await connectWithCode(peerCodeInput.value.trim())
     toast.add({
-      title: 'Peer Connected',
+      title: 'Connected!',
       description: 'Successfully connected to peer',
       color: 'success'
     })
-    peerAddressInput.value = ''
+    peerCodeInput.value = ''
   } catch (err) {
     toast.add({
       title: 'Connection Failed',
-      description: err instanceof Error ? err.message : 'Failed to connect',
+      description: err instanceof Error ? err.message : 'Invalid code or peer offline',
       color: 'error'
     })
   } finally {
     isConnecting.value = false
+  }
+}
+
+// Copy code to clipboard
+async function copyCode(): Promise<void> {
+  if (libp2pState.shareCode) {
+    await navigator.clipboard.writeText(libp2pState.shareCode)
+    toast.add({
+      title: 'Copied!',
+      description: 'Share code copied to clipboard',
+      color: 'success'
+    })
   }
 }
 
@@ -91,19 +125,6 @@ async function handleSendFile(): Promise<void> {
   }
 }
 
-// Copy address to clipboard
-async function copyAddress(): Promise<void> {
-  const addr = getShareableAddress()
-  if (addr) {
-    await navigator.clipboard.writeText(addr)
-    toast.add({
-      title: 'Copied!',
-      description: 'Your address has been copied',
-      color: 'success'
-    })
-  }
-}
-
 // Format file size
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -130,52 +151,63 @@ function formatSize(bytes: number): string {
       </div>
     </div>
 
-    <!-- Your Address -->
+    <!-- Share Code Section -->
     <UCard class="mb-6">
       <template #header>
         <div class="flex items-center gap-2">
-          <UIcon name="i-heroicons-identification" class="size-5" />
-          <span class="font-semibold">Your Address</span>
+          <UIcon name="i-heroicons-qr-code" class="size-5" />
+          <span class="font-semibold">Your Share Code</span>
         </div>
       </template>
 
-      <div v-if="libp2pState.peerId" class="space-y-3">
-        <div class="text-xs font-mono bg-gray-100 dark:bg-gray-800 p-3 rounded-lg break-all">
-          {{ getShareableAddress() || `Peer ID: ${libp2pState.peerId}` }}
+      <div v-if="libp2pState.shareCode" class="text-center space-y-4">
+        <div class="text-6xl font-mono font-bold tracking-widest text-primary">
+          {{ libp2pState.shareCode }}
         </div>
+        <p class="text-sm opacity-60">Share this code with others to connect (expires in 5 min)</p>
+        <div class="flex justify-center gap-2">
+          <UButton color="primary" variant="soft" icon="i-heroicons-clipboard-document" @click="copyCode">
+            Copy Code
+          </UButton>
+          <UButton color="neutral" variant="ghost" icon="i-heroicons-arrow-path" :loading="isGeneratingCode" @click="handleGenerateCode">
+            New Code
+          </UButton>
+        </div>
+      </div>
+      <div v-else class="text-center py-6">
         <UButton 
           color="primary" 
-          variant="soft" 
-          icon="i-heroicons-clipboard-document"
-          :disabled="!getShareableAddress()"
-          @click="copyAddress"
+          size="lg"
+          :loading="isGeneratingCode"
+          :disabled="!libp2pState.relayConnected"
+          @click="handleGenerateCode"
         >
-          Copy Address
+          <UIcon name="i-heroicons-sparkles" class="size-5" />
+          Generate Share Code
         </UButton>
-        <p class="text-xs opacity-50">Share this address with others to connect</p>
-      </div>
-      <div v-else class="text-center py-4 opacity-60">
-        Initializing...
+        <p class="text-sm opacity-50 mt-2">Generate a 6-digit code to share with others</p>
       </div>
     </UCard>
 
     <div class="grid md:grid-cols-2 gap-6">
-      <!-- Connect to Peer -->
+      <!-- Connect with Code -->
       <UCard>
         <template #header>
           <div class="flex items-center gap-2">
             <UIcon name="i-heroicons-link" class="size-5" />
-            <span class="font-semibold">Connect to Peer</span>
+            <span class="font-semibold">Join Peer</span>
           </div>
         </template>
 
         <div class="space-y-4">
-          <UFormField label="Peer Address">
-            <UTextarea
-              v-model="peerAddressInput"
-              placeholder="Paste peer's address here..."
-              :rows="3"
-              class="font-mono text-xs"
+          <UFormField label="Enter Code">
+            <UInput
+              v-model="peerCodeInput"
+              placeholder="Enter 6-digit code"
+              size="xl"
+              class="font-mono text-center text-2xl tracking-widest"
+              maxlength="6"
+              @keyup.enter="handleConnect"
             />
           </UFormField>
 
@@ -183,7 +215,7 @@ function formatSize(bytes: number): string {
             color="primary"
             block
             :loading="isConnecting"
-            :disabled="!peerAddressInput.trim() || !libp2pState.isConnected"
+            :disabled="peerCodeInput.length !== 6 || !libp2pState.isConnected"
             @click="handleConnect"
           >
             <UIcon name="i-heroicons-link" class="size-4" />
@@ -199,7 +231,7 @@ function formatSize(bytes: number): string {
               class="flex items-center gap-2 p-2 rounded-lg bg-gray-100 dark:bg-gray-800"
             >
               <UIcon name="i-heroicons-user-circle" class="size-5 text-success" />
-              <span class="font-mono text-xs truncate flex-1">{{ peer.substring(0, 20) }}...</span>
+              <span class="font-mono text-xs truncate flex-1">{{ peer.substring(0, 16) }}...</span>
               <UButton
                 size="xs"
                 color="primary"
@@ -247,7 +279,7 @@ function formatSize(bytes: number): string {
           <UFormField v-if="selectedFile" label="Send to">
             <USelect
               v-model="selectedPeer"
-              :items="libp2pState.connectedPeers.map(p => ({ label: p.substring(0, 20) + '...', value: p }))"
+              :items="libp2pState.connectedPeers.map(p => ({ label: p.substring(0, 16) + '...', value: p }))"
               placeholder="Select a connected peer"
             />
           </UFormField>

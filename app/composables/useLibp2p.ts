@@ -33,6 +33,7 @@ export interface LibP2PState {
     relayPeerId: string | null
     connectedPeers: string[]
     webrtcAddress: string | null
+    shareCode: string | null
     error: string | null
 }
 
@@ -47,6 +48,7 @@ export function useLibp2p() {
         relayPeerId: null,
         connectedPeers: [],
         webrtcAddress: null,
+        shareCode: null,
         error: null
     })
 
@@ -160,6 +162,47 @@ export function useLibp2p() {
         }
     }
 
+    // Generate a short share code
+    async function generateShareCode(): Promise<string> {
+        const address = getShareableAddress()
+        if (!address) {
+            throw new Error('No shareable address available')
+        }
+
+        const codeApiUrl = config.public.codeApiUrl as string
+        const response = await fetch(`${codeApiUrl}/code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ address })
+        })
+
+        if (!response.ok) {
+            const error = await response.json()
+            throw new Error(error.error || 'Failed to generate code')
+        }
+
+        const { code } = await response.json()
+        state.shareCode = code
+        console.log('📝 Generated share code:', code)
+        return code
+    }
+
+    // Connect using a share code
+    async function connectWithCode(code: string): Promise<void> {
+        const codeApiUrl = config.public.codeApiUrl as string
+        const response = await fetch(`${codeApiUrl}/code?code=${code}`)
+
+        if (!response.ok) {
+            const error = await response.json()
+            throw new Error(error.error || 'Invalid code')
+        }
+
+        const { address } = await response.json()
+        console.log('🔍 Resolved code to address:', address.substring(0, 50) + '...')
+
+        await connectToPeer(address)
+    }
+
     // Connect to a peer by multiaddr
     async function connectToPeer(address: string): Promise<void> {
         if (!state.node) throw new Error('Node not initialized')
@@ -210,6 +253,7 @@ export function useLibp2p() {
             state.relayConnected = false
             state.connectedPeers = []
             state.webrtcAddress = null
+            state.shareCode = null
         }
     }
 
@@ -217,6 +261,8 @@ export function useLibp2p() {
         state: readonly(state) as LibP2PState,
         initNode,
         connectToPeer,
+        connectWithCode,
+        generateShareCode,
         getShareableAddress,
         stopNode
     }

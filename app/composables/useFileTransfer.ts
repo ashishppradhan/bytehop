@@ -24,6 +24,7 @@ export interface FileTransferProgress {
 export interface ReceivedFile {
     filename: string
     blob: Blob
+    opfsKey?: string  // OPFS file key for cleanup
 }
 
 export function useFileTransfer(node: Ref<Libp2p | null>) {
@@ -151,7 +152,8 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
 
             receivedFiles.value.push({
                 filename: metadata.filename,
-                blob: finalBlob
+                blob: finalBlob,
+                opfsKey: fileHandle ? `bytehop-${transferId}` : undefined
             })
 
             console.log('✅ File received:', metadata.filename)
@@ -256,17 +258,70 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
         }
     }
 
-    // Download received file
-    function downloadFile(filename: string): void {
-        const file = receivedFiles.value.find(f => f.filename === filename)
+    // Download received file and optionally clean up OPFS
+    async function downloadFile(filename: string, deleteAfterDownload = true): Promise<void> {
+        const fileIndex = receivedFiles.value.findIndex(f => f.filename === filename)
+        if (fileIndex === -1) return
+
+        const file = receivedFiles.value[fileIndex]
         if (!file) return
 
+        // Trigger download
         const url = URL.createObjectURL(file.blob)
         const a = document.createElement('a')
         a.href = url
         a.download = filename
         a.click()
         URL.revokeObjectURL(url)
+
+        // Clean up OPFS storage if applicable
+        if (deleteAfterDownload && file.opfsKey) {
+            try {
+                const root = await navigator.storage.getDirectory()
+                await root.removeEntry(file.opfsKey)
+                console.log('🗑️ Cleaned up OPFS:', file.opfsKey)
+            } catch (e) {
+                console.warn('Failed to clean OPFS:', e)
+            }
+            // Remove from received files list
+            receivedFiles.value.splice(fileIndex, 1)
+        }
+    }
+
+    // Clear a specific received file and its OPFS storage
+    async function clearReceivedFile(filename: string): Promise<void> {
+        const fileIndex = receivedFiles.value.findIndex(f => f.filename === filename)
+        if (fileIndex === -1) return
+
+        const file = receivedFiles.value[fileIndex]
+        if (!file) return
+
+        // Clean up OPFS
+        if (file.opfsKey) {
+            try {
+                const root = await navigator.storage.getDirectory()
+                await root.removeEntry(file.opfsKey)
+                console.log('🗑️ Cleaned up OPFS:', file.opfsKey)
+            } catch { /* ignore */ }
+        }
+
+        receivedFiles.value.splice(fileIndex, 1)
+    }
+
+    // Clear all OPFS storage used by ByteHop
+    async function clearAllStorage(): Promise<void> {
+        try {
+            const root = await navigator.storage.getDirectory()
+            for await (const [name] of (root as any).entries()) {
+                if (name.startsWith('bytehop-')) {
+                    await root.removeEntry(name)
+                }
+            }
+            receivedFiles.value = []
+            console.log('🗑️ Cleared all OPFS storage')
+        } catch (e) {
+            console.warn('Failed to clear OPFS:', e)
+        }
     }
 
     // Clear transfer
@@ -279,6 +334,8 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
         receivedFiles: readonly(receivedFiles),
         sendFile,
         downloadFile,
+        clearReceivedFile,
+        clearAllStorage,
         clearTransfer
     }
 }

@@ -11,7 +11,8 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      relayAddress: process.env.RELAY_ADDRESS || '/ip4/127.0.0.1/tcp/9090/ws'
+      relayAddress: process.env.RELAY_ADDRESS || '/ip4/127.0.0.1/tcp/9090/ws',
+      codeApiUrl: process.env.CODE_API_URL || 'http://localhost:3001'
     }
   },
 
