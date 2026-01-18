@@ -224,11 +224,11 @@ function formatSize(bytes: number): string {
 
         <div class="space-y-4">
           <input
+            id="file-input"
             type="file"
             class="hidden"
-            id="file-input"
             @change="handleFileSelect"
-          />
+          >
           
           <label
             for="file-input"

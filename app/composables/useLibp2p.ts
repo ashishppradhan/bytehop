@@ -12,6 +12,8 @@ import { webRTC } from '@libp2p/webrtc'
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2'
 import { identify, identifyPush, type Identify, type IdentifyPush } from '@libp2p/identify'
 import { ping, type Ping } from '@libp2p/ping'
+import { multiaddr } from '@multiformats/multiaddr'
+import { WebRTC } from '@multiformats/multiaddr-matcher'
 
 // Define the services type for our libp2p node
 interface LibP2PServices {
@@ -22,8 +24,6 @@ interface LibP2PServices {
 }
 
 type LibP2PNode = Libp2p<LibP2PServices>
-import { multiaddr } from '@multiformats/multiaddr'
-import { WebRTC } from '@multiformats/multiaddr-matcher'
 
 export interface LibP2PState {
     node: LibP2PNode | null

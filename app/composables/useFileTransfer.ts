@@ -104,7 +104,6 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
             const chunks: Uint8Array[] = [] // Fallback memory buffer
 
             try {
-                // @ts-ignore - TS might not know about storage.getDirectory yet
                 const root = await navigator.storage.getDirectory()
                 fileHandle = await root.getFileHandle(`bytehop-${transferId}`, { create: true })
                 writable = await fileHandle.createWritable()
