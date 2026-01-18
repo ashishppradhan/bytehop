@@ -1,0 +1,20 @@
+{
+  "name": "bytehop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser-to-browser P2P file sharing with libp2p WebRTC",
+  "workspaces": [
+    "frontend",
+    "relay-server"
+  ],
+  "scripts": {
+    "dev": "npm run dev:relay & npm run dev:frontend",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:relay": "npm run dev -w relay-server",
+    "build": "npm run build -w frontend && npm run build -w relay-server",
+    "build:frontend": "npm run build -w frontend",
+    "build:relay": "npm run build -w relay-server"
+  },
+  "keywords": ["p2p", "file-sharing", "webrtc", "libp2p"],
+  "license": "MIT"
+}
