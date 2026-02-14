@@ -258,75 +258,45 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
         }
     }
 
-    // Download received file and optionally clean up OPFS
-    async function downloadFile(filename: string, deleteAfterDownload = true): Promise<void> {
-        const fileIndex = receivedFiles.value.findIndex(f => f.filename === filename)
-        if (fileIndex === -1) return
-
-        const file = receivedFiles.value[fileIndex]
+    // Download received file (keeps file in list for re-download during session)
+    function downloadFile(filename: string): void {
+        const file = receivedFiles.value.find(f => f.filename === filename)
         if (!file) return
 
-        // Trigger download
         const url = URL.createObjectURL(file.blob)
         const a = document.createElement('a')
         a.href = url
         a.download = filename
         a.click()
         URL.revokeObjectURL(url)
-
-        // Clean up OPFS storage if applicable
-        if (deleteAfterDownload && file.opfsKey) {
-            try {
-                const root = await navigator.storage.getDirectory()
-                await root.removeEntry(file.opfsKey)
-                console.log('🗑️ Cleaned up OPFS:', file.opfsKey)
-            } catch (e) {
-                console.warn('Failed to clean OPFS:', e)
-            }
-            // Remove from received files list
-            receivedFiles.value.splice(fileIndex, 1)
-        }
     }
 
-    // Clear a specific received file and its OPFS storage
-    async function clearReceivedFile(filename: string): Promise<void> {
-        const fileIndex = receivedFiles.value.findIndex(f => f.filename === filename)
-        if (fileIndex === -1) return
-
-        const file = receivedFiles.value[fileIndex]
-        if (!file) return
-
-        // Clean up OPFS
-        if (file.opfsKey) {
-            try {
-                const root = await navigator.storage.getDirectory()
-                await root.removeEntry(file.opfsKey)
-                console.log('🗑️ Cleaned up OPFS:', file.opfsKey)
-            } catch { /* ignore */ }
-        }
-
-        receivedFiles.value.splice(fileIndex, 1)
+    // Clear transfer entry
+    function clearTransfer(id: string): void {
+        transfers.value.delete(id)
     }
 
-    // Clear all OPFS storage used by ByteHop
-    async function clearAllStorage(): Promise<void> {
-        try {
-            const root = await navigator.storage.getDirectory()
+    // Clean up leftover OPFS files from previous sessions on startup
+    if (typeof window !== 'undefined') {
+        navigator.storage.getDirectory().then(async (root) => {
             for await (const [name] of (root as any).entries()) {
                 if (name.startsWith('bytehop-')) {
                     await root.removeEntry(name)
+                    console.log('🗑️ Cleaned up leftover OPFS:', name)
                 }
             }
-            receivedFiles.value = []
-            console.log('🗑️ Cleared all OPFS storage')
-        } catch (e) {
-            console.warn('Failed to clear OPFS:', e)
-        }
-    }
+        }).catch(() => { /* OPFS not available */ })
 
-    // Clear transfer
-    function clearTransfer(id: string): void {
-        transfers.value.delete(id)
+        // Register cleanup service worker (cleans OPFS when all tabs close)
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/cleanup-sw.js').then((reg) => {
+                // Notify SW that a session is active
+                reg.active?.postMessage('bytehop-session-active')
+                navigator.serviceWorker.ready.then((ready) => {
+                    ready.active?.postMessage('bytehop-session-active')
+                })
+            }).catch(() => { /* SW not available */ })
+        }
     }
 
     return {
@@ -334,8 +304,6 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
         receivedFiles: readonly(receivedFiles),
         sendFile,
         downloadFile,
-        clearReceivedFile,
-        clearAllStorage,
         clearTransfer
     }
 }
