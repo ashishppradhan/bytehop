@@ -287,10 +287,11 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
             }
         }).catch(() => { /* OPFS not available */ })
 
-        // Register cleanup service worker (cleans OPFS when all tabs close)
-        if ('serviceWorker' in navigator) {
+        // Register cleanup service worker (only works with trusted certs or localhost)
+        const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+        const isTrustedSSL = location.protocol === 'https:' && !location.hostname.match(/^\d/)
+        if ('serviceWorker' in navigator && (isLocalhost || isTrustedSSL)) {
             navigator.serviceWorker.register('/cleanup-sw.js').then((reg) => {
-                // Notify SW that a session is active
                 reg.active?.postMessage('bytehop-session-active')
                 navigator.serviceWorker.ready.then((ready) => {
                     ready.active?.postMessage('bytehop-session-active')
