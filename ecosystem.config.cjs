@@ -11,7 +11,7 @@ module.exports = {
         },
         {
             name: 'bytehop-relay',
-            script: 'node_modules/.bin/tsx',
+            script: 'bun',
             args: 'relay/index.ts',
             cwd: '/opt/bytehop',
             env: {
