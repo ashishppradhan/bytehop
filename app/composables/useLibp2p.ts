@@ -63,8 +63,10 @@ export function useLibp2p() {
     const knownPeers = new Map<string, string>()
 
     // ── sessionStorage keys ─────────────────────────────────────
-    const SS_KNOWN_PEERS = 'bytehop:knownPeers'   // JSON: { peerId: address }[]
+    const SS_KNOWN_PEERS = 'bytehop:knownPeers'   // JSON: Record<peerId, address>
     const SS_LAST_CODE = 'bytehop:lastPeerCode'    // The code we last used to connect
+    let savedPeersReconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let visibilityHandler: (() => void) | null = null
 
     function persistKnownPeers(): void {
         try {
@@ -86,8 +88,11 @@ export function useLibp2p() {
 
     /** After a full page reload, try to reconnect to every previously-known peer */
     async function reconnectSavedPeers(): Promise<void> {
+        if (!state.node) return
+
         // First try: re-use the share code we connected with (most reliable)
-        const savedCode = sessionStorage.getItem(SS_LAST_CODE)
+        let savedCode: string | null = null
+        try { savedCode = sessionStorage.getItem(SS_LAST_CODE) } catch { /* ignore */ }
         if (savedCode) {
             try {
                 console.log(`🔄 Reconnecting with saved code: ${savedCode}`)
@@ -131,7 +136,8 @@ export function useLibp2p() {
         const delay = 2000 * 2 ** attempt // 2s, 4s, 8s
         await new Promise(r => setTimeout(r, delay))
 
-        // Re-check after delay
+        // Re-check state after delay (node may have stopped or relay dropped)
+        if (!state.node || !state.relayConnected) return
         if (state.connectedPeers.includes(peerId)) return
 
         try {
@@ -234,12 +240,12 @@ export function useLibp2p() {
             if (knownPeers.size > 0) {
                 console.log(`🔄 Found ${knownPeers.size} saved peer(s), attempting reconnect...`)
                 // Slight delay to let relay reservation settle
-                setTimeout(() => reconnectSavedPeers(), 3000)
+                savedPeersReconnectTimer = setTimeout(() => reconnectSavedPeers(), 3000)
             }
 
             // ── Mobile / tab-switch recovery ────────────────────
             if (typeof document !== 'undefined') {
-                document.addEventListener('visibilitychange', async () => {
+                visibilityHandler = async () => {
                     if (document.visibilityState !== 'visible' || !state.node) return
 
                     console.log('👁️ Page became visible, checking connections...')
@@ -265,7 +271,8 @@ export function useLibp2p() {
                             attemptPeerReconnect(peerId, address)
                         }
                     }
-                })
+                }
+                document.addEventListener('visibilitychange', visibilityHandler)
             }
 
         } catch (err) {
@@ -403,6 +410,11 @@ export function useLibp2p() {
     // Stop the node
     async function stopNode(): Promise<void> {
         if (relayReconnectTimer) { clearTimeout(relayReconnectTimer); relayReconnectTimer = null }
+        if (savedPeersReconnectTimer) { clearTimeout(savedPeersReconnectTimer); savedPeersReconnectTimer = null }
+        if (visibilityHandler && typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', visibilityHandler)
+            visibilityHandler = null
+        }
         knownPeers.clear()
         // Clear saved session so we don't auto-reconnect on next load
         try {
