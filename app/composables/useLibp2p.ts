@@ -65,22 +65,25 @@ export function useLibp2p() {
     const knownPeers = new Map<string, string>()
 
     // ── Stable PeerId via localStorage ─────────────────────────
-    const SS_PRIVATE_KEY = 'bytehop:privateKey'
+    const LS_PRIVATE_KEY = 'bytehop:privateKey'
     let visibilityHandler: (() => void) | null = null
 
     async function getOrCreatePrivateKey(): Promise<PrivateKey> {
         try {
-            const stored = localStorage.getItem(SS_PRIVATE_KEY)
+            const stored = localStorage.getItem(LS_PRIVATE_KEY)
             if (stored) {
                 const bytes = Uint8Array.from(atob(stored), c => c.charCodeAt(0))
                 return privateKeyFromProtobuf(bytes)
             }
-        } catch { /* localStorage not available or corrupt key */ }
+        } catch {
+            // Corrupt key — remove so we don't loop on bad data
+            try { localStorage.removeItem(LS_PRIVATE_KEY) } catch { /* ignore */ }
+        }
 
         const key = await generateKeyPair('Ed25519')
         try {
             const bytes = privateKeyToProtobuf(key)
-            localStorage.setItem(SS_PRIVATE_KEY, btoa(String.fromCharCode(...bytes)))
+            localStorage.setItem(LS_PRIVATE_KEY, btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join('')))
         } catch { /* ignore */ }
         return key
     }
