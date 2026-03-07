@@ -35,6 +35,7 @@ export interface LibP2PState {
     webrtcAddress: string | null
     shareCode: string | null
     error: string | null
+    isReconnecting: boolean
 }
 
 export function useLibp2p() {
@@ -49,8 +50,104 @@ export function useLibp2p() {
         connectedPeers: [],
         webrtcAddress: null,
         shareCode: null,
-        error: null
+        error: null,
+        isReconnecting: false
     })
+
+    // ── Reconnection internals ──────────────────────────────────
+    let relayReconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let relayReconnectAttempt = 0
+    const MAX_RELAY_RECONNECT_DELAY_MS = 30_000 // cap backoff at 30 s
+
+    // Peer ID → last known multiaddr (for reconnection after drops)
+    const knownPeers = new Map<string, string>()
+
+    // ── sessionStorage keys ─────────────────────────────────────
+    const SS_KNOWN_PEERS = 'bytehop:knownPeers'   // JSON: Record<peerId, address>
+    const SS_LAST_CODE = 'bytehop:lastPeerCode'    // The code we last used to connect
+    let savedPeersReconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let visibilityHandler: (() => void) | null = null
+
+    function persistKnownPeers(): void {
+        try {
+            const entries = Object.fromEntries(knownPeers)
+            sessionStorage.setItem(SS_KNOWN_PEERS, JSON.stringify(entries))
+        } catch { /* sessionStorage not available */ }
+    }
+
+    function restoreKnownPeers(): void {
+        try {
+            const raw = sessionStorage.getItem(SS_KNOWN_PEERS)
+            if (!raw) return
+            const entries = JSON.parse(raw) as Record<string, string>
+            for (const [peerId, address] of Object.entries(entries)) {
+                knownPeers.set(peerId, address)
+            }
+        } catch { /* ignore */ }
+    }
+
+    /** After a full page reload, try to reconnect to every previously-known peer */
+    async function reconnectSavedPeers(): Promise<void> {
+        if (!state.node) return
+
+        // First try: re-use the share code we connected with (most reliable)
+        let savedCode: string | null = null
+        try { savedCode = sessionStorage.getItem(SS_LAST_CODE) } catch { /* ignore */ }
+        if (savedCode) {
+            try {
+                console.log(`🔄 Reconnecting with saved code: ${savedCode}`)
+                await connectWithCode(savedCode)
+                return // success — code resolved to peer address and connected
+            } catch {
+                console.warn('🔄 Saved code reconnect failed, trying direct addresses')
+            }
+        }
+
+        // Fallback: try each known peer address directly
+        for (const [peerId, address] of knownPeers) {
+            if (peerId === state.relayPeerId) continue
+            if (state.connectedPeers.includes(peerId)) continue
+            attemptPeerReconnect(peerId, address)
+        }
+    }
+
+    function scheduleRelayReconnect(): void {
+        if (relayReconnectTimer) return // already scheduled
+        state.isReconnecting = true
+        const delay = Math.min(1000 * 2 ** relayReconnectAttempt, MAX_RELAY_RECONNECT_DELAY_MS)
+        console.log(`🔄 Relay reconnect in ${delay}ms (attempt ${relayReconnectAttempt + 1})`)
+        relayReconnectTimer = setTimeout(async () => {
+            relayReconnectTimer = null
+            relayReconnectAttempt++
+            await connectToRelay()
+            // If still not connected, schedule another attempt
+            if (!state.relayConnected) {
+                scheduleRelayReconnect()
+            }
+        }, delay)
+    }
+
+    async function attemptPeerReconnect(peerId: string, address: string, attempt = 0): Promise<void> {
+        const MAX_ATTEMPTS = 3
+        if (attempt >= MAX_ATTEMPTS || !state.node || !state.relayConnected) return
+        // Skip if already reconnected
+        if (state.connectedPeers.includes(peerId)) return
+
+        const delay = 2000 * 2 ** attempt // 2s, 4s, 8s
+        await new Promise(r => setTimeout(r, delay))
+
+        // Re-check state after delay (node may have stopped or relay dropped)
+        if (!state.node || !state.relayConnected) return
+        if (state.connectedPeers.includes(peerId)) return
+
+        try {
+            await connectToPeer(address)
+            console.log(`🔄 Reconnected to peer: ${peerId.substring(0, 16)}...`)
+        } catch {
+            console.warn(`🔄 Reconnect attempt ${attempt + 1}/${MAX_ATTEMPTS} failed for ${peerId.substring(0, 16)}...`)
+            await attemptPeerReconnect(peerId, address, attempt + 1)
+        }
+    }
 
     // Initialize libp2p node
     async function initNode(): Promise<void> {
@@ -91,6 +188,10 @@ export function useLibp2p() {
             node.addEventListener('connection:open', (event) => {
                 const peerId = event.detail.remotePeer.toString()
 
+                // Remember address for reconnection (in-memory + sessionStorage)
+                knownPeers.set(peerId, event.detail.remoteAddr.toString())
+                persistKnownPeers()
+
                 // Don't add relay to connected peers
                 if (peerId !== state.relayPeerId && !state.connectedPeers.includes(peerId)) {
                     state.connectedPeers.push(peerId)
@@ -101,7 +202,24 @@ export function useLibp2p() {
 
             node.addEventListener('connection:close', (event) => {
                 const peerId = event.detail.remotePeer.toString()
+
+                // Relay dropped — schedule reconnect
+                if (peerId === state.relayPeerId) {
+                    state.relayConnected = false
+                    state.webrtcAddress = null
+                    console.log('⚠️ Relay connection lost')
+                    scheduleRelayReconnect()
+                    return
+                }
+
                 state.connectedPeers = state.connectedPeers.filter(p => p !== peerId)
+
+                // Attempt to reconnect to known peer
+                const knownAddr = knownPeers.get(peerId)
+                if (knownAddr) {
+                    console.log(`⚠️ Peer ${peerId.substring(0, 16)}... disconnected, attempting reconnect`)
+                    attemptPeerReconnect(peerId, knownAddr)
+                }
             })
 
             node.addEventListener('self:peer:update', () => {
@@ -116,6 +234,46 @@ export function useLibp2p() {
 
             // Connect to relay
             await connectToRelay()
+
+            // ── Restore saved peers after page reload ────────────
+            restoreKnownPeers()
+            if (knownPeers.size > 0) {
+                console.log(`🔄 Found ${knownPeers.size} saved peer(s), attempting reconnect...`)
+                // Slight delay to let relay reservation settle
+                savedPeersReconnectTimer = setTimeout(() => reconnectSavedPeers(), 3000)
+            }
+
+            // ── Mobile / tab-switch recovery ────────────────────
+            if (typeof document !== 'undefined') {
+                visibilityHandler = async () => {
+                    if (document.visibilityState !== 'visible' || !state.node) return
+
+                    console.log('👁️ Page became visible, checking connections...')
+
+                    // Check relay health
+                    const relayAlive = state.node.getConnections()
+                        .some(c => c.remotePeer.toString() === state.relayPeerId)
+                    if (!relayAlive && state.relayConnected) {
+                        state.relayConnected = false
+                        state.webrtcAddress = null
+                        scheduleRelayReconnect()
+                    } else if (!state.relayConnected) {
+                        scheduleRelayReconnect()
+                    }
+
+                    // Check each known peer
+                    for (const [peerId, address] of knownPeers) {
+                        if (peerId === state.relayPeerId) continue
+                        const peerAlive = state.node.getConnections()
+                            .some(c => c.remotePeer.toString() === peerId)
+                        if (!peerAlive && state.connectedPeers.includes(peerId)) {
+                            state.connectedPeers = state.connectedPeers.filter(p => p !== peerId)
+                            attemptPeerReconnect(peerId, address)
+                        }
+                    }
+                }
+                document.addEventListener('visibilitychange', visibilityHandler)
+            }
 
         } catch (err) {
             console.error('Failed to initialize:', err)
@@ -149,11 +307,14 @@ export function useLibp2p() {
 
             state.relayPeerId = connection.remotePeer.toString()
             state.relayConnected = true
+            state.isReconnecting = false
+            relayReconnectAttempt = 0
+            if (relayReconnectTimer) { clearTimeout(relayReconnectTimer); relayReconnectTimer = null }
             state.connectedPeers = state.connectedPeers.filter(p => p !== state.relayPeerId)
 
             console.log('✅ Connected to relay:', state.relayPeerId)
 
-            // Wait for WebRTC address
+            // Wait for WebRTC address (relay needs a moment to set up reservation)
             setTimeout(() => updateWebRTCAddress(), 2000)
 
         } catch (err) {
@@ -200,6 +361,9 @@ export function useLibp2p() {
         const { address } = await response.json()
         console.log('🔍 Resolved code to address:', address.substring(0, 50) + '...')
 
+        // Save code for reconnection after page reload
+        try { sessionStorage.setItem(SS_LAST_CODE, code) } catch { /* ignore */ }
+
         await connectToPeer(address)
     }
 
@@ -245,12 +409,25 @@ export function useLibp2p() {
 
     // Stop the node
     async function stopNode(): Promise<void> {
+        if (relayReconnectTimer) { clearTimeout(relayReconnectTimer); relayReconnectTimer = null }
+        if (savedPeersReconnectTimer) { clearTimeout(savedPeersReconnectTimer); savedPeersReconnectTimer = null }
+        if (visibilityHandler && typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', visibilityHandler)
+            visibilityHandler = null
+        }
+        knownPeers.clear()
+        // Clear saved session so we don't auto-reconnect on next load
+        try {
+            sessionStorage.removeItem(SS_KNOWN_PEERS)
+            sessionStorage.removeItem(SS_LAST_CODE)
+        } catch { /* ignore */ }
         if (state.node) {
             await state.node.stop()
             state.node = null
             state.peerId = null
             state.isConnected = false
             state.relayConnected = false
+            state.isReconnecting = false
             state.connectedPeers = []
             state.webrtcAddress = null
             state.shareCode = null

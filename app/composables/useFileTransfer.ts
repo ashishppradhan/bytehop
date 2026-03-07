@@ -277,7 +277,8 @@ export function useFileTransfer(node: Ref<Libp2p | null>) {
     }
 
     // Clean up leftover OPFS files from previous sessions on startup
-    if (typeof window !== 'undefined') {
+    // navigator.storage requires a secure context (HTTPS or localhost)
+    if (typeof window !== 'undefined' && navigator.storage?.getDirectory) {
         navigator.storage.getDirectory().then(async (root) => {
             for await (const [name] of (root as any).entries()) {
                 if (name.startsWith('bytehop-')) {

@@ -146,7 +146,7 @@ function formatSize(bytes: number): string {
           {{ libp2pState.isConnected ? 'Node Active' : 'Disconnected' }}
         </UBadge>
         <UBadge :color="libp2pState.relayConnected ? 'success' : 'warning'" variant="soft">
-          Relay: {{ libp2pState.relayConnected ? 'Connected' : 'Not Connected' }}
+          Relay: {{ libp2pState.relayConnected ? 'Connected' : libp2pState.isReconnecting ? 'Reconnecting...' : 'Not Connected' }}
         </UBadge>
       </div>
     </div>
