@@ -68,6 +68,7 @@ export function useLibp2p() {
     const LS_PRIVATE_KEY = 'bytehop:privateKey'
     const LS_LAST_PEER = 'bytehop:lastPeer'  // PeerId of last connected peer
     let visibilityHandler: (() => void) | null = null
+    let peerReconnectTimer: ReturnType<typeof setTimeout> | null = null
 
     async function getOrCreatePrivateKey(): Promise<PrivateKey> {
         try {
@@ -77,14 +78,15 @@ export function useLibp2p() {
                 return privateKeyFromProtobuf(bytes)
             }
         } catch {
-            localStorage.removeItem(LS_PRIVATE_KEY)
+            // Corrupt key — remove so we don't loop on bad data
+            try { localStorage.removeItem(LS_PRIVATE_KEY) } catch { /* ignore */ }
         }
 
         const key = await generateKeyPair('Ed25519')
-
-        const bytes = privateKeyToProtobuf(key)
-        localStorage.setItem(LS_PRIVATE_KEY, btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join('')))
-
+        try {
+            const bytes = privateKeyToProtobuf(key)
+            localStorage.setItem(LS_PRIVATE_KEY, btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join('')))
+        } catch { /* ignore — node works fine without persistence */ }
         return key
     }
 
@@ -104,7 +106,7 @@ export function useLibp2p() {
         }, delay)
     }
 
-    async function attemptPeerReconnect(peerId: string, _address: string, attempt = 0): Promise<void> {
+    async function attemptPeerReconnect(peerId: string, attempt = 0): Promise<void> {
         const MAX_ATTEMPTS = 3
         if (attempt >= MAX_ATTEMPTS || !state.node || !state.relayConnected) return
         // Skip if already reconnected
@@ -128,7 +130,7 @@ export function useLibp2p() {
             console.log(`🔄 Reconnected to peer: ${peerId.substring(0, 16)}...`)
         } catch {
             console.warn(`🔄 Reconnect attempt ${attempt + 1}/${MAX_ATTEMPTS} failed for ${peerId.substring(0, 16)}...`)
-            await attemptPeerReconnect(peerId, _address, attempt + 1)
+            await attemptPeerReconnect(peerId, attempt + 1)
         }
     }
 
@@ -180,8 +182,8 @@ export function useLibp2p() {
                 // Don't add relay to connected peers
                 if (peerId !== state.relayPeerId && !state.connectedPeers.includes(peerId)) {
                     state.connectedPeers.push(peerId)
-                    // Save peer identity so we can reconnect after page reload
-                    // Guard: only save if we know the relay PeerId (prevents saving relay itself)
+                    // Only save once we know the relay PeerId (it's null during
+                    // relay connection:open, making the !== check always true)
                     if (state.relayPeerId) {
                         try { localStorage.setItem(LS_LAST_PEER, peerId) } catch { /* ignore */ }
                     }
@@ -218,7 +220,7 @@ export function useLibp2p() {
                 const knownAddr = knownPeers.get(peerId)
                 if (knownAddr) {
                     console.log(`⚠️ Peer ${peerId.substring(0, 16)}... disconnected, attempting reconnect`)
-                    attemptPeerReconnect(peerId, knownAddr)
+                    attemptPeerReconnect(peerId)
                 }
             })
 
@@ -260,7 +262,7 @@ export function useLibp2p() {
                             .some(c => c.remotePeer.toString() === peerId)
                         if (!peerAlive && state.connectedPeers.includes(peerId)) {
                             state.connectedPeers = state.connectedPeers.filter(p => p !== peerId)
-                            attemptPeerReconnect(peerId, address)
+                            attemptPeerReconnect(peerId)
                         }
                     }
                 }
@@ -319,7 +321,9 @@ export function useLibp2p() {
                     const peerAddr = `${relayAddress}/p2p/${state.relayPeerId}/p2p-circuit/webrtc/p2p/${savedPeer}`
                     console.log(`🔄 Reconnecting to saved peer: ${savedPeer.substring(0, 16)}...`)
                     // Delay to let relay reservation settle
-                    setTimeout(() => {
+                    peerReconnectTimer = setTimeout(() => {
+                        peerReconnectTimer = null
+                        if (!state.node || !state.relayConnected) return
                         if (!state.connectedPeers.includes(savedPeer)) {
                             connectToPeer(peerAddr).catch(() => {
                                 console.warn('🔄 Failed to reconnect to saved peer')
@@ -419,6 +423,7 @@ export function useLibp2p() {
     // Stop the node
     async function stopNode(): Promise<void> {
         if (relayReconnectTimer) { clearTimeout(relayReconnectTimer); relayReconnectTimer = null }
+        if (peerReconnectTimer) { clearTimeout(peerReconnectTimer); peerReconnectTimer = null }
         if (visibilityHandler && typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', visibilityHandler)
             visibilityHandler = null
